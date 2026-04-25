@@ -1,5 +1,6 @@
+import { useEffect, useState } from 'react';
 import { useGameStore } from './store/gameStore';
-import { SetupScreen } from './components/SetupScreen';
+import { LobbyScreen } from './components/LobbyScreen';
 import { WinScreen } from './components/WinScreen';
 import { Board } from './components/Board/Board';
 import { Rack } from './components/Rack/Rack';
@@ -8,21 +9,78 @@ import { ActionPanel } from './components/ActionPanel';
 import { GameLog } from './components/GameLog';
 import { AbilityPanel } from './components/AbilityPanel';
 import { getValidTargets } from './game/placement';
+import { subscribeToGameState } from './lib/roomService';
+import type { Faction } from './game/types';
 
 export default function App() {
-  const { game, startGame, onSelectTroop, onDraw, onPlaceTroop, onResolveAbility, onSkipAbility, resetGame } = useGameStore();
+  const {
+    game, roomCode, myFaction,
+    setRoom, syncFromFirebase, startGame,
+    onSelectTroop, onDraw, onPlaceTroop,
+    onResolveAbility, onSkipAbility, resetGame,
+  } = useGameStore();
 
-  if (!game) {
-    return <SetupScreen onStart={(tid, fp) => startGame(tid, fp)} />;
+  const [hasRoom, setHasRoom] = useState(false);
+
+  // Subscribe to Firebase game state updates
+  useEffect(() => {
+    if (!roomCode) return;
+    const unsub = subscribeToGameState(roomCode, (state) => {
+      if (state) syncFromFirebase(state);
+    });
+    return unsub;
+  }, [roomCode]);
+
+  const handleHostStart = async (code: string, faction: Faction, firstPlayer: Faction) => {
+    setRoom(code, faction);
+    setHasRoom(true);
+    await startGame('castle-plain', firstPlayer);
+  };
+
+  const handleGuestJoined = (code: string, faction: Faction) => {
+    setRoom(code, faction);
+    setHasRoom(true);
+  };
+
+  // --- Lobby ---
+  if (!hasRoom) {
+    return (
+      <LobbyScreen
+        onHostStart={handleHostStart}
+        onGuestJoined={handleGuestJoined}
+      />
+    );
   }
 
+  // --- Waiting for host to start (guest side) ---
+  if (!game) {
+    return (
+      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
+        <div className="bg-gray-800 rounded-2xl p-8 w-full max-w-sm text-center border border-gray-700">
+          <div className="text-5xl mb-4">⏳</div>
+          <p className="text-white text-lg font-bold mb-2">입장 완료!</p>
+          <p className="text-gray-400 text-sm mb-3">방장이 게임을 시작하길 기다리는 중...</p>
+          <p className="text-gray-500 text-xs">
+            내 색깔:{' '}
+            <span className={myFaction === 'blue' ? 'text-blue-400 font-bold' : 'text-red-400 font-bold'}>
+              {myFaction === 'blue' ? '🔵 파랑' : '🔴 빨강'}
+            </span>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // --- End screen ---
   if (game.phase === 'ended') {
     return <WinScreen game={game} onRestart={resetGame} />;
   }
 
   const { currentTurn, phase, pendingAbility } = game;
+  const isMyTurn = currentTurn === myFaction;
 
   const handleBoardClick = (targetId: string) => {
+    if (!isMyTurn) return;
     if (phase === 'ability' && pendingAbility) {
       if (pendingAbility.abilityKey === 'extra-place' && game.selectedTroopId) {
         onResolveAbility(game.selectedTroopId + ':' + targetId);
@@ -33,14 +91,13 @@ export default function App() {
       }
       return;
     }
-
     if (phase === 'playing' && game.validTargets.includes(targetId)) {
       onPlaceTroop(targetId);
     }
   };
 
   const handleAbilitySelect = (id: string) => {
-    if (!pendingAbility) return;
+    if (!pendingAbility || !isMyTurn) return;
     if (pendingAbility.abilityKey === 'extra-place') {
       const validNow = getValidTargets(game, id, currentTurn);
       useGameStore.setState(s => ({
@@ -57,11 +114,13 @@ export default function App() {
 
         {/* LEFT: Board + Game Log */}
         <div className="flex flex-col flex-shrink-0 overflow-auto">
-          {/* Top bar over board */}
           <div className="flex items-center justify-between px-3 py-2 bg-gray-900 border-b border-gray-700">
             <h1 className="text-lg font-bold text-yellow-400">🎮 Toy Battle</h1>
             <div className="flex gap-2 items-center">
-              <span className="text-xs text-gray-400">{game.terrain.name}</span>
+              <span className={`text-xs font-bold px-2 py-0.5 rounded ${isMyTurn ? 'bg-green-800 text-green-300' : 'bg-gray-700 text-gray-400'}`}>
+                {isMyTurn ? '내 턴' : '상대 턴'}
+              </span>
+              <span className="text-xs text-gray-500">방 코드: {roomCode}</span>
               <button onClick={resetGame} className="text-xs bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded">
                 🔄 메뉴
               </button>
@@ -70,16 +129,14 @@ export default function App() {
 
           <Board game={game} onClickTarget={handleBoardClick} />
 
-          {/* Game log below board */}
           <div className="bg-gray-900 border-t border-gray-700 px-3 py-2">
             <GameLog log={game.log} />
           </div>
         </div>
 
         {/* RIGHT: Control panel */}
-        <div className="flex flex-col gap-2 flex-1 p-3 overflow-y-auto bg-gray-850 border-l border-gray-700 min-w-0" style={{ background: '#111827' }}>
+        <div className="flex flex-col gap-2 flex-1 p-3 overflow-y-auto border-l border-gray-700 min-w-0" style={{ background: '#111827' }}>
 
-          {/* Medal Track */}
           <MedalTrack game={game} />
 
           {/* Red Rack */}
@@ -87,8 +144,8 @@ export default function App() {
             player={game.players.red}
             isCurrentTurn={currentTurn === 'red'}
             selectedTroopId={currentTurn === 'red' ? game.selectedTroopId : null}
-            onSelectTroop={currentTurn === 'red' ? onSelectTroop : () => {}}
-            hideCards={currentTurn === 'blue'}
+            onSelectTroop={myFaction === 'red' && currentTurn === 'red' ? onSelectTroop : () => {}}
+            hideCards={myFaction !== 'red'}
           />
 
           {/* Blue Rack */}
@@ -96,18 +153,20 @@ export default function App() {
             player={game.players.blue}
             isCurrentTurn={currentTurn === 'blue'}
             selectedTroopId={currentTurn === 'blue' ? game.selectedTroopId : null}
-            onSelectTroop={currentTurn === 'blue' ? onSelectTroop : () => {}}
-            hideCards={currentTurn === 'red'}
+            onSelectTroop={myFaction === 'blue' && currentTurn === 'blue' ? onSelectTroop : () => {}}
+            hideCards={myFaction !== 'blue'}
           />
 
-          {/* Action / Ability Panel */}
-          <ActionPanel game={game} onDraw={onDraw} onSkipAbility={onSkipAbility} />
+          <ActionPanel
+            game={game}
+            onDraw={isMyTurn ? onDraw : () => {}}
+            onSkipAbility={isMyTurn ? onSkipAbility : () => {}}
+          />
 
-          {phase === 'ability' && pendingAbility && (
+          {phase === 'ability' && pendingAbility && isMyTurn && (
             <AbilityPanel game={game} onSelectTarget={handleAbilitySelect} onSkip={onSkipAbility} />
           )}
 
-          {/* Troop guide */}
           <div className="bg-gray-800 rounded-xl p-3 text-xs mt-auto">
             <h3 className="text-gray-400 font-bold mb-2">병정 가이드</h3>
             <div className="space-y-0.5 text-gray-400">
