@@ -33,12 +33,56 @@ export async function pushGameState(code: string, state: GameState): Promise<voi
   await set(ref(db, `rooms/${code}/gameState`), clean);
 }
 
+// Firebase strips null values and empty arrays — restore them after reading
+function sanitize(raw: any): GameState {
+  return {
+    ...raw,
+    selectedTroopId: raw.selectedTroopId ?? null,
+    validTargets: raw.validTargets ?? [],
+    pendingAbility: raw.pendingAbility ?? null,
+    winner: raw.winner ?? null,
+    winReason: raw.winReason ?? null,
+    log: raw.log ?? [],
+    discard: raw.discard ?? [],
+    terrain: {
+      ...raw.terrain,
+      bases: (raw.terrain?.bases ?? []).map((b: any) => ({
+        ...b,
+        occupant: b.occupant ?? null,
+        stack: b.stack ?? [],
+        connectedTo: b.connectedTo ?? [],
+      })),
+      headquarters: (raw.terrain?.headquarters ?? []).map((hq: any) => ({
+        ...hq,
+        occupant: hq.occupant ?? null,
+        connectedTo: hq.connectedTo ?? [],
+      })),
+      regions: raw.terrain?.regions ?? [],
+    },
+    players: {
+      blue: {
+        ...raw.players?.blue,
+        supply: raw.players?.blue?.supply ?? [],
+        rack: raw.players?.blue?.rack ?? [],
+      },
+      red: {
+        ...raw.players?.red,
+        supply: raw.players?.red?.supply ?? [],
+        rack: raw.players?.red?.rack ?? [],
+      },
+    },
+  };
+}
+
 export function subscribeToGameState(
   code: string,
   cb: (state: GameState | null) => void,
 ): () => void {
   const r = ref(db, `rooms/${code}/gameState`);
-  onValue(r, (snap) => cb(snap.val() as GameState | null));
+  onValue(r, (snap) => {
+    const val = snap.val();
+    cb(val ? sanitize(val) : null);
+  });
   return () => off(r);
 }
 
